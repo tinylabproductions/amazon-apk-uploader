@@ -6,12 +6,19 @@ import com.softwaremill.quicklens._
 import scala.annotation.tailrec
 
 trait UpdateMappings { _: App =>
-  case class ScrapeAppIds(errors: Vector[String], mapping: PackageNameToAppIdMapping)
+  case class ScrapeAppIds(
+    errors: Vector[String],
+    warnings: Vector[String],
+    mapping: PackageNameToAppIdMapping
+  )
   object ScrapeAppIds {
-    val empty: ScrapeAppIds = apply(Vector.empty, PackageNameToAppIdMapping.empty)
+    val empty: ScrapeAppIds = apply(Vector.empty, Vector.empty, PackageNameToAppIdMapping.empty)
   }
 
-  def updateMapping(known: PackageNameToAppIdMapping): ScrapeAppIds = {
+  def updateMapping(
+    skuMismatchesAreErrors: Boolean,
+    known: PackageNameToAppIdMapping
+  ): ScrapeAppIds = {
     val AppSkuRe = """^[a-zA-Z_0-9\.]+$""".r
     object AppSkuExtractor {
       def unapply(elem: Element): Option[String] = {
@@ -49,55 +56,71 @@ trait UpdateMappings { _: App =>
 
     val (scrapeErrors, scrapedAppIds) = scrapeIds(1, (Vector.empty, Set.empty))
     val unknownIds = scrapedAppIds -- known.mapping.values
-    val (detailErrors, mappings) = unknownIds.map { appId =>
-      go to appUrl(appId)
+    val (detailErrors, mappingsAndWarnings) =
+      unknownIds.toVector.zipWithIndex.map { case (appId, idx) =>
+        info(s"Retrieving details for $appId ${idx + 1}/${unknownIds.size}...")
+        go to appUrl(appId)
 
-      // The element seems to be loaded asynchronously, therefore we try go get it multiple times.
-      def getAmazonAppSku(retry: Int): Either[String, AmazonAppSku] = {
-        val appSkuElem =
-          find(cssSelector("#app-root > div > div.appDetails > div:nth-child(2) > div > div"))
+        // The element seems to be loaded asynchronously, therefore we try go get it multiple times.
+        def getAmazonAppSku(retry: Int): Either[String, AmazonAppSku] = {
+          val appSkuElem =
+            find(cssSelector("#app-root > div > div.appDetails > div:nth-child(2) > div > div"))
 
-        val result =
-          appSkuElem
-          // We might have multiple hits, so try to find the real one.
-          .collectFirst { case AppSkuExtractor(sku) => AmazonAppSku(sku) }
-          .toRight(s"Can't extract App SKU for $appId from ${appSkuElem.map(asString)}")
+          val result =
+            appSkuElem
+            // We might have multiple hits, so try to find the real one.
+            .collectFirst { case AppSkuExtractor(sku) => AmazonAppSku(sku) }
+            .toRight(s"Can't extract App SKU for $appId from ${appSkuElem.map(asString)}")
 
-        if (result.isLeft) {
-          if (retry < 15) {
-            val timeout = 50 * (retry + 1)
-            info(s"Unable to retrieve app sku for $appId, retrying in ${timeout}ms")
-            Thread.sleep(timeout)
-            getAmazonAppSku(retry + 1)
+          if (result.isLeft) {
+            if (retry < 20) {
+              val timeout = 50 * (retry + 1)
+              info(s"Retrying app sku retrieval for $appId in ${timeout}ms")
+              Thread.sleep(timeout)
+              getAmazonAppSku(retry + 1)
+            }
+            else {
+              err(s"Failed to retrieve app sku for $appId.")
+              result
+            }
           }
           else {
-            err(s"Failed to retrieve app sku for $appId, aborting.")
             result
           }
         }
-        else {
-          result
+
+        def fetchAndroidPackageName(
+          amazonAppSku: AmazonAppSku
+        ): Either[String, AndroidPackageName] = {
+          goToBinaryFiles()
+          find(id("manifest_ro_PACKAGE"))
+            .map(elem => AndroidPackageName(elem.text.trim))
+            .toRight(s"Can't find android package name for $amazonAppSku, $appId")
         }
-      }
 
-      def fetchAndroidPackageName(): Either[String, AndroidPackageName] = {
-        goToBinaryFiles()
-        find(id("manifest_ro_PACKAGE"))
-          .map(elem => AndroidPackageName(elem.text.trim))
-          .toRight(s"Can't find android package name for $appId")
-      }
+        for {
+          amazonAppSku <- getAmazonAppSku(0)
+          androidPackageName <- fetchAndroidPackageName(amazonAppSku)
+          skuMatchesPackage = amazonAppSku.s == androidPackageName.s
+          result <- {
+            def skuMismatchError = s"$amazonAppSku != $androidPackageName for $appId"
+            if (skuMismatchesAreErrors && !skuMatchesPackage)
+              Left(skuMismatchError)
+            else {
+              val tpl = androidPackageName -> appId
+              val warning = if (skuMatchesPackage) None else Some(skuMismatchError)
+              Right((tpl, warning))
+            }
+          }
+        } yield result
+      }.partitionEithers
 
-      for {
-        amazonAppSku <- getAmazonAppSku(0)
-        androidPackageName <- fetchAndroidPackageName()
-        result <-
-          if (amazonAppSku.s == androidPackageName.s) Right(androidPackageName -> appId)
-          else Left(s"$amazonAppSku != $androidPackageName for $appId")
-      } yield result
-    }.partitionEithers
+    val warnings = mappingsAndWarnings.flatMap(_._2)
+    val mappings = mappingsAndWarnings.map(_._1)
 
     ScrapeAppIds(
       scrapeErrors ++ detailErrors,
+      warnings,
       known.modify(_.mapping).using(_ ++ mappings)
     )
   }

@@ -20,6 +20,7 @@ object Main {
     System.setProperty("webdriver.chrome.driver", chromeDriver.toString)
 
     App.work(Cfg(
+      amazonAppSkuMustMatchAndroidPackageName = false,
       mappingFilePath = Paths.get("mapping.json"),
       publishInfoJsonFilename = "publish_info.json"
     ))

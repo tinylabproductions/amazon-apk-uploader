@@ -2,6 +2,7 @@ package com.tinylabproductions.amazon_appstore_automator.app
 
 
 import java.nio.file.{Files, Path}
+import java.time.LocalDateTime
 
 import com.tinylabproductions.amazon_appstore_automator._
 import org.scalatest.selenium.Chrome
@@ -24,8 +25,9 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings {
     go to href
   }
 
-  def err(o: Any): Unit = Console.err.println(s"!!! $o")
-  def info(o: Any): Unit = println(o)
+  def err(o: Any): Unit = Console.err.println(s"[${LocalDateTime.now()}] !!! $o")
+  def warn(o: Any): Unit = println(s"[${LocalDateTime.now()}] *** $o")
+  def info(o: Any): Unit = println(s"[${LocalDateTime.now()}] $o")
 
   def work(cfg: Cfg): Unit = {
     go to "https://developer.amazon.com/myapps.html"
@@ -41,11 +43,17 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings {
         Json.parse(Files.readAllBytes(cfg.mappingFilePath)).as[PackageNameToAppIdMapping]
       else
         PackageNameToAppIdMapping.empty
-    val result = updateMapping(mapping)
+    val result = updateMapping(cfg.amazonAppSkuMustMatchAndroidPackageName, mapping)
     if (result.errors.nonEmpty) {
       err("### Found errors:")
       result.errors.foreach { error =>
         err(s" - $error")
+      }
+    }
+    if (result.warnings.nonEmpty) {
+      warn("### Found warnings:")
+      result.warnings.foreach { warning =>
+        warn(s" - $warning")
       }
     }
     Files.write(cfg.mappingFilePath, Json.toBytes(Json.toJson(result.mapping)))

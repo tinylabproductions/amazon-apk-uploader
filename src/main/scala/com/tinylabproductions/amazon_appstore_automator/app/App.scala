@@ -12,7 +12,6 @@ import play.api.libs.json.Json
 
 import scala.annotation.tailrec
 import scala.concurrent.duration._
-import scala.util.control.NonFatal
 import scala.util.matching.Regex
 
 object App extends App
@@ -36,6 +35,8 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
   def goToBinaryFiles(): Unit = goTo("Binary Files tab", id("header_nav_binary_a"))
   def goToReleaseNotes(): Unit = goTo("Release Notes tab", id("header_nav_releasenotes_a"))
   def upcomingVersionLinkElem: Option[Element] = find(id("upcoming_version_a"))
+  def currentVersionUnderReview: Boolean =
+    find(cssSelector("#current_version_a .versionStatus")).exists(_.text.trim == "(Under Review)")
 
   def err(o: Any): Unit = Console.err.println(s"[${LocalDateTime.now()}] !!! $o")
   def warn(o: Any): Unit = println(s"[${LocalDateTime.now()}] *** $o")
@@ -104,13 +105,9 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
 
     info(s"Uploading ${releases.v.size} releases...")
     releases.v.zipWithIndex.foreach { case (release, idx) =>
-      info(s"Uploading $release (${idx + 1}/${releases.v.size}")
+      info(s"Uploading $release (${idx + 1}/${releases.v.size})")
       mapping.mapping.get(release.publishInfo.packageName) match {
-        case Some(appId) =>
-          try { updateApp(appId, release.apkPath, releaseNotes) }
-          catch { case NonFatal(t) =>
-            err(s"Error uploading $release, skipping: ${t.asString}")
-          }
+        case Some(appId) => updateApp(appId, release.apkPath, releaseNotes)
         case None => err(s"Can't find app id for $release, skipping!")
       }
     }
@@ -129,17 +126,19 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
     // However for our functionality that is fine, as we just need the upcoming version link.
     go to appUrl(appId)
 
-    upcomingVersionLinkElem match {
-      case None =>
+    (upcomingVersionLinkElem, currentVersionUnderReview) match {
+      case (None, false) =>
         // Add upcoming version
         eventually { click on findOrDie(id("new_version_a"), "add upcoming version link") }
         eventually { findOrDie(id("post_confirm_form"), "confirmation form").underlying.submit() }
-      case Some(elem) =>
+      case (None, true) =>
+        err(s"Current version under review for $appId, skipping $apk")
+      case (Some(elem), _) =>
         go to href(elem, "upcoming version link")
     }
 
     val uploadApkFieldQuery = id("appBinary")
-    def canUploadNewApk = find(uploadApkFieldQuery).isEmpty
+    def canUploadNewApk = find(uploadApkFieldQuery).isDefined
     // Remove current binary files
     @tailrec def removeBinaryFiles(): Unit = {
       def findRemoveAssetButton = find(cssSelector("a[id^=remove_asset_button_]"))
@@ -161,24 +160,39 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
 
     // Binary Files
     goToBinaryFiles()
+    (find(id("edit_button")), find(id("cancel_app_button"))) match {
+      case (None, Some(_)) =>
+        info("App already submitting, skipping.")
+      case (None, None) =>
+        err("Neither edit not cancel submission buttons could be found in binary files page!")
+        err(s"Cannot continue uploading, skipping $appId for $apk.")
+      case (Some(edit), _) =>
+        // Edit
+        click on edit
+        removeBinaryFiles()
 
-    // Edit
-    click on id("edit_button")
-    removeBinaryFiles()
+        // Upload file
+        val box = eventually { findOrDie(id("appBinary"), "upload binary box") }
+        info(s"Uploading $apk to $box")
+        box.underlying.sendKeys(apk.toRealPath().toString)
 
-    // Upload file
-    findOrDie(id("appBinary"), "upload binary box").underlying.sendKeys(apk.toRealPath().toString)
+        find(id("itemSection.errors")) match {
+          case Some(error) =>
+            err(s"Uploading $appId APK resulted in an error, skipping $apk!")
+            err(error.text)
+          case None =>
+            // Save
+            click on id("submit_button")
 
-    // Save
-    click on id("submit_button")
+            goToReleaseNotes()
+            click on id("edit_button")
+            eventually { textArea(id("releaseNotes")).value = releaseNotes.s }
+            // Save
+            click on id("submit_button")
 
-    goToReleaseNotes()
-    click on id("edit_button")
-    eventually { textArea(id("releaseNotes")).value = releaseNotes.s }
-    // Save
-    click on id("submit_button")
-
-    // Submit store
-    click on id("submit_app_button")
+            // Submit store
+            click on id("submit_app_button")
+        }
+    }
   }
 }

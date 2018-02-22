@@ -1,5 +1,8 @@
 package com.tinylabproductions.amazon_appstore_automator
 
+import java.nio.file.Path
+
+import configs.Configs
 import play.api.libs.functional.syntax._
 import play.api.libs.json.{Format, JsPath}
 import play.api.libs.json.Format._
@@ -31,6 +34,7 @@ object AmazonAppSku {
 case class AmazonAppId(s: String) extends AnyVal
 object AmazonAppId {
   implicit val format: Format[AmazonAppId] = jsonFormatStr(apply)(_.s)
+  implicit val configs: Configs[AmazonAppId] = Configs.stringConfigs.map(apply)
 }
 
 /***
@@ -58,3 +62,9 @@ object PublishInfo {
   implicit val format: Format[PublishInfo] =
     (JsPath \ "package_name").format[AndroidPackageName].inmap(apply, _.packageName)
 }
+
+case class ReleaseNotes(s: String) extends AnyVal
+case class Release(apkPath: Path, publishInfo: PublishInfo) {
+  override def toString: String = s"${publishInfo.packageName.s} at $apkPath"
+}
+case class Releases(v: Vector[Release]) extends AnyVal

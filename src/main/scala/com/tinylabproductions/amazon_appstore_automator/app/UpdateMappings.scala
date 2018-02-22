@@ -1,6 +1,6 @@
 package com.tinylabproductions.amazon_appstore_automator.app
 
-import com.tinylabproductions.amazon_appstore_automator.{AmazonAppId, AmazonAppSku, AndroidPackageName, PackageNameToAppIdMapping}
+import com.tinylabproductions.amazon_appstore_automator.{AmazonAppId, AmazonAppSku, AndroidPackageName, LogLevel, PackageNameToAppIdMapping}
 import com.softwaremill.quicklens._
 
 import scala.annotation.tailrec
@@ -16,7 +16,8 @@ trait UpdateMappings { _: App =>
   }
 
   def updateMapping(
-    skuMismatchesAreErrors: Boolean,
+    onSkuMismatches: LogLevel,
+    ignoredAppIds: Set[AmazonAppId],
     known: PackageNameToAppIdMapping
   ): ScrapeAppIds = {
     val AppSkuRe = """^[a-zA-Z_0-9\.]+$""".r
@@ -55,7 +56,7 @@ trait UpdateMappings { _: App =>
     }
 
     val (scrapeErrors, scrapedAppIds) = scrapeIds(1, (Vector.empty, Set.empty))
-    val unknownIds = scrapedAppIds -- known.mapping.values
+    val unknownIds = scrapedAppIds -- known.mapping.values -- ignoredAppIds
     val (detailErrors, mappingsAndWarnings) =
       unknownIds.toVector.zipWithIndex.map { case (appId, idx) =>
         info(s"Retrieving details for $appId ${idx + 1}/${unknownIds.size}...")
@@ -104,11 +105,13 @@ trait UpdateMappings { _: App =>
           skuMatchesPackage = amazonAppSku.s == androidPackageName.s
           result <- {
             def skuMismatchError = s"$amazonAppSku != $androidPackageName for $appId"
-            if (skuMismatchesAreErrors && !skuMatchesPackage)
+            if (onSkuMismatches == LogLevel.Error && !skuMatchesPackage)
               Left(skuMismatchError)
             else {
               val tpl = androidPackageName -> appId
-              val warning = if (skuMatchesPackage) None else Some(skuMismatchError)
+              val warning =
+                if (!skuMatchesPackage && onSkuMismatches == LogLevel.Warning) Some(skuMismatchError)
+                else None
               Right((tpl, warning))
             }
           }

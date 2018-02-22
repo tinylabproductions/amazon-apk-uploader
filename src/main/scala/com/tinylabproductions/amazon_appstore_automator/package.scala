@@ -1,7 +1,8 @@
 package com.tinylabproductions
 
+import org.apache.commons.lang3.exception.ExceptionUtils
 import play.api.libs.functional.syntax._
-import play.api.libs.json.Format
+import play.api.libs.json.{Format, JsPath, JsonValidationError}
 
 package object amazon_appstore_automator {
   def jsonFormatStr[A](f: String => A)(g: A => String): Format[A] =
@@ -37,5 +38,24 @@ package object amazon_appstore_automator {
       if (hasErrors) Left(errors.result())
       else Right(results.result())
     }
+  }
+
+  implicit class JsErrorExts(val errs: Seq[(JsPath, Seq[JsonValidationError])]) extends AnyVal {
+    def asString: String = {
+      val sb = new StringBuilder
+      errs.foreach { case (path, errors) =>
+        sb.append(s"At $path:\n")
+        errors.foreach { error =>
+          val messages = error.messages.mkString(", ")
+          val args = if (error.args.isEmpty) "" else s"\n  args: ${error.args.mkString(", ")}"
+          sb.append(s"- $messages$args\n")
+        }
+      }
+      sb.toString()
+    }
+  }
+
+  implicit class ThrowableExts(val t: Throwable) extends AnyVal {
+    def asString: String = s"$t\n${ExceptionUtils.getStackTrace(t)}"
   }
 }

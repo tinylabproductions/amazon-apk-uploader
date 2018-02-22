@@ -8,7 +8,9 @@ libraryDependencies ++= Seq(
   "org.scalatest" %% "scalatest" % "3.0.4",
   "com.github.kxbmap" %% "configs" % "0.4.4",
   "com.softwaremill.quicklens" %% "quicklens" % "1.4.11",
-  "com.typesafe.play" %% "play-json" % "2.6.8"
+  "com.typesafe.play" %% "play-json" % "2.6.8",
+  "commons-io" % "commons-io" % "2.6",
+  "org.apache.commons" % "commons-lang3" % "3.7"
 )
 
 enablePlugins(JavaAppPackaging)

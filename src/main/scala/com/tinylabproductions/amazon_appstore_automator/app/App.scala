@@ -99,9 +99,17 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
     }
 
     // Do we have enough mapping data so we could proceed?
-    val mappingSufficient =
-      releases.v.map(_.publishInfo.packageName).forall(initialMapping.mapping.contains)
-    val mapping = if (mappingSufficient) initialMapping else doUpdateMapping()
+    val unknownPackages =
+      releases.v.map(_.publishInfo.packageName).filterNot(initialMapping.mapping.contains)
+    val mapping =
+      if (unknownPackages.isEmpty) initialMapping
+      else {
+        info(s"Have unknown ${unknownPackages.size} android packages, need to collect amazon app ids:")
+        unknownPackages.foreach { pkg =>
+          info(s"- ${pkg.s}")
+        }
+        doUpdateMapping()
+      }
 
     info(s"Uploading ${releases.v.size} releases...")
     releases.v.zipWithIndex.foreach { case (release, idx) =>

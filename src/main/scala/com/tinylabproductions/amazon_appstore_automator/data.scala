@@ -37,15 +37,6 @@ object AmazonAppId {
   implicit val configs: Configs[AmazonAppId] = Configs.stringConfigs.map(apply)
 }
 
-/***
-  * Application name as seen in amazon dashboard.
-  *
-  * @param s the name
-  * @param undergroundRelease because underground apps can have same names, this says whether this
-  *                           refers to the amazon underground release or not
-  **/
-case class AmazonAppName(s: String, undergroundRelease: Boolean)
-
 case class PackageNameToAppIdMapping(mapping: Map[AndroidPackageName, AmazonAppId])
 object PackageNameToAppIdMapping {
   val empty = apply(Map.empty)

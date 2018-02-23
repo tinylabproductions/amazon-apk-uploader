@@ -47,7 +47,7 @@ object Main {
             println(s"Using Chrome driver: ${cfg.chromeDriverPath}")
             System.setProperty("webdriver.chrome.driver", cfg.chromeDriverPath.toString)
 
-//            io.StdIn.readLine("Press enter to continue...")
+            io.StdIn.readLine("Press enter to continue...")
             App.work(cfg, releaseNotes, releases, mapping)
           case Failure(errors) =>
             Console.err.println("Error while reading configs:")

@@ -44,7 +44,7 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
 
   def work(
     cfg: Cfg, releaseNotes: ReleaseNotes, releases: Releases,
-    initialMapping: PackageNameToAppIdMapping
+    initialMapping: PackageNameToAppIdMapping, submitApp: Boolean
   ): Unit = {
     go to "https://developer.amazon.com/myapps.html"
     def isLoggedIn = find(id("appsandservices_myapps")).isDefined
@@ -107,7 +107,7 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
     releases.v.zipWithIndex.foreach { case (release, idx) =>
       info(s"Uploading $release (${idx + 1}/${releases.v.size})")
       mapping.mapping.get(release.publishInfo.packageName) match {
-        case Some(appId) => updateApp(appId, release.apkPath, releaseNotes)
+        case Some(appId) => updateApp(appId, release.apkPath, releaseNotes, submitApp)
         case None => err(s"Can't find app id for $release, skipping!")
       }
     }
@@ -118,7 +118,7 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
     s"https://developer.amazon.com/application/general/${appId.s}/detail.html"
 
   def updateApp(
-    appId: AmazonAppId, apk: Path, releaseNotes: ReleaseNotes
+    appId: AmazonAppId, apk: Path, releaseNotes: ReleaseNotes, submitApp: Boolean
   ): Unit = {
     // Old App IDs still work, they just say that we are looking at an archived version of an
     // app and provide a link to new version cssSelector(".app-status-ARCHIVED a").
@@ -190,8 +190,8 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
             // Save
             click on id("submit_button")
 
-            // Submit store
-            click on id("submit_app_button")
+            // Submit to store
+            if (submitApp) click on id("submit_app_button")
         }
     }
   }

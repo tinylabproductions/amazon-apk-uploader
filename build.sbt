@@ -10,7 +10,8 @@ libraryDependencies ++= Seq(
   "com.softwaremill.quicklens" %% "quicklens" % "1.4.11",
   "com.typesafe.play" %% "play-json" % "2.6.8",
   "commons-io" % "commons-io" % "2.6",
-  "org.apache.commons" % "commons-lang3" % "3.7"
+  "org.apache.commons" % "commons-lang3" % "3.7",
+  "com.github.scopt" %% "scopt" % "3.7.0"
 )
 
 enablePlugins(JavaAppPackaging)

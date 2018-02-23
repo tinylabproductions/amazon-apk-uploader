@@ -2,7 +2,7 @@ package com.tinylabproductions.amazon_appstore_automator
 
 import java.io.File
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path, Paths}
+import java.nio.file.{Files, Path}
 
 import com.tinylabproductions.amazon_appstore_automator.app.App
 import com.typesafe.config.ConfigFactory
@@ -19,56 +19,42 @@ object Main {
   def readUtf8(p: Path): String = new String(Files.readAllBytes(p), StandardCharsets.UTF_8)
 
   def main(args: Array[String]): Unit = {
-    args match {
-      case Array(configFileS, releaseNotesS, releasesPathS) =>
-        ConfigFactory.parseFile(new File(configFileS)).extract[Cfg] match {
-          case Success(cfg) =>
-            val releaseNotes = get(
-              Try(ReleaseNotes(readUtf8(Paths.get(releaseNotesS))))
+    CLIArgs.parser.parse(args, CLIArgs.zero.zero).fold(sys.exit(1)) { parsedArgs =>
+      ConfigFactory.parseFile(parsedArgs.configFile.toFile).extract[Cfg] match {
+        case Success(cfg) =>
+          val releaseNotes = get(
+            Try(ReleaseNotes(readUtf8(parsedArgs.releaseNotes)))
               .toEither.left.map { t =>
-                s"Can't read release notes from $releaseNotesS: ${t.asString}"
-              }
-            )
-            val releases = Releases(getS(
-              FileUtils.iterateFiles(
-                new File(releasesPathS),
-                FileFilterUtils.nameFileFilter(cfg.publishInfoJsonFilename),
-                TrueFileFilter.TRUE
-              ).asScala.map(readReleaseDirectory).sequenceValidations
-            ))
-            val mapping = get(readMapping(cfg.mappingFilePath))
-
-            println(s"Will deploy ${releases.v.size} releases:")
-            releases.v.foreach { release =>
-              println(s"- $release")
+              s"Can't read release notes from ${parsedArgs.releaseNotes}: ${t.asString}"
             }
-            println()
+          )
+          val releases = Releases(getS(
+            FileUtils.iterateFiles(
+              parsedArgs.releasesPath.toFile,
+              FileFilterUtils.nameFileFilter(cfg.publishInfoJsonFilename),
+              TrueFileFilter.TRUE
+            ).asScala.map(readReleaseDirectory).sequenceValidations
+          ))
+          val mapping = get(readMapping(cfg.mappingFilePath))
 
-            println(s"Using Chrome driver: ${cfg.chromeDriverPath}")
-            System.setProperty("webdriver.chrome.driver", cfg.chromeDriverPath.toString)
+          println(s"Will deploy ${releases.v.size} releases (submit=${parsedArgs.submitApp}):")
+          releases.v.foreach { release =>
+            println(s"- $release")
+          }
+          println()
 
-            io.StdIn.readLine("Press enter to continue...")
-            App.work(cfg, releaseNotes, releases, mapping)
-          case Failure(errors) =>
-            Console.err.println("Error while reading configs:")
-            errors.entries.foreach { error =>
-              Console.err.println(s"- ${error.messageWithPath}")
-            }
-            sys.exit(2)
-        }
-      case _ =>
-        Console.err.println("Usage: amazon-appstore-automator app.conf path_to_release_notes path_to_releases")
-        Console.err.println()
-        Console.err.println("path_to_release_notes:")
-        Console.err.println("  file with release notes that will be uploaded to app store")
-        Console.err.println()
-        Console.err.println("path_to_releases:")
-        Console.err.println("  directory with subdirectories that each contains publish_info.json")
-        Console.err.println("  (configurable from app.conf) and an .apk to upload")
-        Console.err.println()
-        Console.err.println("Get Chrome from: https://www.google.com/chrome/")
-        Console.err.println("Get Chrome driver from: https://sites.google.com/a/chromium.org/chromedriver/")
-        sys.exit(1)
+          println(s"Using Chrome driver: ${cfg.chromeDriverPath}")
+          System.setProperty("webdriver.chrome.driver", cfg.chromeDriverPath.toString)
+
+          io.StdIn.readLine("Press enter to continue...")
+          App.work(cfg, releaseNotes, releases, mapping, parsedArgs.submitApp)
+        case Failure(errors) =>
+          Console.err.println("Error while reading configs:")
+          errors.entries.foreach { error =>
+            Console.err.println(s"- ${error.messageWithPath}")
+          }
+          sys.exit(2)
+      }
     }
   }
 

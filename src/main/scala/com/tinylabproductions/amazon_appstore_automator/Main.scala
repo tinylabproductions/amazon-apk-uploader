@@ -37,17 +37,19 @@ object Main {
           ))
           val mapping = get(readMapping(cfg.mappingFilePath))
 
-          println(s"Will deploy ${releases.v.size} releases (submit=${parsedArgs.submitApp}):")
+          println(s"Will deploy ${releases.v.size} releases:")
           releases.v.foreach { release =>
             println(s"- $release")
           }
+          println()
+          println(parsedArgs.updateAppParams)
           println()
 
           println(s"Using Chrome driver: ${cfg.chromeDriverPath}")
           System.setProperty("webdriver.chrome.driver", cfg.chromeDriverPath.toString)
 
           io.StdIn.readLine("Press enter to continue...")
-          App.work(cfg, releaseNotes, releases, mapping, parsedArgs.submitApp)
+          App.work(cfg, releaseNotes, releases, mapping, parsedArgs.updateAppParams)
         case Failure(errors) =>
           Console.err.println("Error while reading configs:")
           errors.entries.foreach { error =>

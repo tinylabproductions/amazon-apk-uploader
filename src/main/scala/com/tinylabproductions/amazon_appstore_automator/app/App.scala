@@ -12,6 +12,7 @@ import play.api.libs.json.Json
 
 import scala.annotation.tailrec
 import scala.concurrent.duration._
+import scala.util.control.NonFatal
 import scala.util.matching.Regex
 
 object App extends App
@@ -34,6 +35,9 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
 
   def goToBinaryFiles(): Unit = goTo("Binary Files tab", id("header_nav_binary_a"))
   def goToReleaseNotes(): Unit = goTo("Release Notes tab", id("header_nav_releasenotes_a"))
+  def goToContentRating(): Unit = goTo("Content Rating tab", id("header_nav_rating_a"))
+  val editButton: IdQuery = id("edit_button")
+
   def upcomingVersionLinkElem: Option[Element] = find(id("upcoming_version_a"))
   def currentVersionUnderReview: Boolean =
     find(cssSelector("#current_version_a .versionStatus")).exists(_.text.trim == "(Under Review)")
@@ -44,7 +48,7 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
 
   def work(
     cfg: Cfg, releaseNotes: ReleaseNotes, releases: Releases,
-    initialMapping: PackageNameToAppIdMapping, submitApp: Boolean
+    initialMapping: PackageNameToAppIdMapping, params: UpdateAppParams
   ): Unit = {
     go to "https://developer.amazon.com/myapps.html"
     def isLoggedIn = find(id("appsandservices_myapps")).isDefined
@@ -115,7 +119,7 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
     releases.v.zipWithIndex.foreach { case (release, idx) =>
       info(s"Uploading $release (${idx + 1}/${releases.v.size})")
       mapping.mapping.get(release.publishInfo.packageName) match {
-        case Some(appId) => updateApp(appId, release.apkPath, releaseNotes, submitApp)
+        case Some(appId) => updateApp(appId, release.apkPath, releaseNotes, params)
         case None => err(s"Can't find app id for $release, skipping!")
       }
     }
@@ -126,7 +130,7 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
     s"https://developer.amazon.com/application/general/${appId.s}/detail.html"
 
   def updateApp(
-    appId: AmazonAppId, apk: Path, releaseNotes: ReleaseNotes, submitApp: Boolean
+    appId: AmazonAppId, apk: Path, releaseNotes: ReleaseNotes, params: UpdateAppParams
   ): Unit = {
     // Old App IDs still work, they just say that we are looking at an archived version of an
     // app and provide a link to new version cssSelector(".app-status-ARCHIVED a").
@@ -168,7 +172,7 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
 
     // Binary Files
     goToBinaryFiles()
-    (find(id("edit_button")), find(id("cancel_app_button"))) match {
+    (find(editButton), find(id("cancel_app_button"))) match {
       case (None, Some(_)) =>
         info("App already submitting, skipping.")
       case (None, None) =>
@@ -182,7 +186,8 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
         // Upload file
         val box = eventually { findOrDie(id("appBinary"), "upload binary box") }
         info(s"Uploading $apk to $box")
-        box.underlying.sendKeys(apk.toRealPath().toString)
+        // This sometimes dies with TimeoutException, so retry a few times
+        withRetries("upload APK", 5) { box.underlying.sendKeys(apk.toRealPath().toString) }
 
         find(id("itemSection.errors")) match {
           case Some(error) =>
@@ -193,14 +198,35 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
             click on id("submit_button")
 
             goToReleaseNotes()
-            click on id("edit_button")
+            click on editButton
+
             eventually { textArea(id("releaseNotes")).value = releaseNotes.s }
             // Save
             click on id("submit_button")
 
+            params.appDirectedUnderAge13.foreach { directedFor =>
+              goToContentRating()
+              click on editButton
+              eventually { click on id(s"child_directed_${if (directedFor) "Yes" else "No"}") }
+              click on id("submit_button")
+            }
+
             // Submit to store
-            if (submitApp) click on id("submit_app_button")
+            if (params.submitApp) click on id("submit_app_button")
         }
     }
+  }
+
+  def withRetries[A](name: String, retries: Int)(f: => A): A = {
+    def doTry(tryNo: Int): A = {
+      try { f }
+      catch {
+        case NonFatal(t) if tryNo <= retries =>
+          Console.err.println(s"$name failed try $tryNo with $t, retrying")
+          doTry(tryNo + 1)
+      }
+    }
+
+    doTry(1)
   }
 }

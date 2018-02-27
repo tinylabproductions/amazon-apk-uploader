@@ -2,7 +2,6 @@ package com.tinylabproductions.amazon_appstore_automator.app
 
 
 import java.nio.file.{Files, Path}
-import java.time.LocalDateTime
 
 import com.tinylabproductions.amazon_appstore_automator._
 import org.scalatest.concurrent.Eventually
@@ -11,12 +10,11 @@ import org.scalatest.time.{Milliseconds, Seconds, Span}
 import play.api.libs.json.Json
 
 import scala.annotation.tailrec
-import scala.concurrent.duration._
-import scala.util.control.NonFatal
 import scala.util.matching.Regex
 
-object App extends App
-trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually {
+class App extends Chrome with WebBrowserOps with UpdateMappings with Eventually {
+  import com.tinylabproductions.amazon_appstore_automator.util.Log._
+
   override implicit val patienceConfig: PatienceConfig = PatienceConfig(
     timeout = Span(10, Seconds),
     interval = Span(100, Milliseconds)
@@ -42,38 +40,25 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
   def currentVersionUnderReview: Boolean =
     find(cssSelector("#current_version_a .versionStatus")).exists(_.text.trim == "(Under Review)")
 
-  def err(o: Any): Unit = Console.err.println(s"[${LocalDateTime.now()}] !!! $o")
-  def warn(o: Any): Unit = println(s"[${LocalDateTime.now()}] *** $o")
-  def info(o: Any): Unit = println(s"[${LocalDateTime.now()}] $o")
-
-  def work(
-    cfg: Cfg, releaseNotes: ReleaseNotes, releases: Releases,
-    initialMapping: PackageNameToAppIdMapping, params: UpdateAppParams
-  ): Unit = {
+  def signIn(credentials: Credentials): Boolean = {
     go to "https://developer.amazon.com/myapps.html"
     def isLoggedIn = find(id("appsandservices_myapps")).isDefined
 
-    if (!isLoggedIn) {
-      for {
-        username <- cfg.credentials.username
-        field <- find(id("ap_email")).map(e => new EmailField(e.underlying))
-      } field.value = username
-      for {
-        password <- cfg.credentials.password
-        field <- find(id("ap_password")).map(e => new PasswordField(e.underlying))
-      } field.value = password
-
-      if (cfg.credentials.username.isDefined && cfg.credentials.password.isDefined) {
-        click on id("signInSubmit")
-      }
+    if (isLoggedIn) {
+      true
     }
+    else {
+      emailField(id("ap_email")).value = credentials.username
+      new PasswordField(findOrDie(id("ap_password")).underlying).value = credentials.password
+      click on id("signInSubmit")
 
-    while (!isLoggedIn) {
-      val timeout = 1.second
-      info(s"Not logged in, please log in. Checking again in $timeout")
-      Thread.sleep(timeout.toMillis)
+      isLoggedIn
     }
+  }
 
+  def getLatestMapping(
+    cfg: Cfg, releases: Releases, initialMapping: PackageNameToAppIdMapping
+  ): PackageNameToAppIdMapping = {
     def doUpdateMapping(): PackageNameToAppIdMapping = {
       info("Updating mapping...")
       val result = updateMapping(
@@ -82,7 +67,7 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
       Files.write(cfg.mappingFilePath, Json.toBytes(Json.toJson(result.mapping)))
       info(
         s"Mapping updated. " +
-          s"Old: ${initialMapping.mapping.size} entries, new: ${result.mapping.mapping.size} entries."
+        s"Old: ${initialMapping.mapping.size} entries, new: ${result.mapping.mapping.size} entries."
       )
       if (result.warnings.nonEmpty) {
         warn("### Found warnings:")
@@ -115,15 +100,7 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
         doUpdateMapping()
       }
 
-    info(s"Uploading ${releases.v.size} releases...")
-    releases.v.zipWithIndex.foreach { case (release, idx) =>
-      info(s"Uploading $release (${idx + 1}/${releases.v.size})")
-      mapping.mapping.get(release.publishInfo.packageName) match {
-        case Some(appId) => updateApp(appId, release.apkPath, releaseNotes, params)
-        case None => err(s"Can't find app id for $release, skipping!")
-      }
-    }
-    info("Done uploading releases.")
+    mapping
   }
 
   def appUrl(appId: AmazonAppId): String =
@@ -186,8 +163,7 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
         // Upload file
         val box = eventually { findOrDie(id("appBinary"), "upload binary box") }
         info(s"Uploading $apk to $box")
-        // This sometimes dies with TimeoutException, so retry a few times
-        withRetries("upload APK", 5) { box.underlying.sendKeys(apk.toRealPath().toString) }
+        box.underlying.sendKeys(apk.toRealPath().toString)
 
         find(id("itemSection.errors")) match {
           case Some(error) =>
@@ -215,18 +191,5 @@ trait App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
             if (params.submitApp) click on id("submit_app_button")
         }
     }
-  }
-
-  def withRetries[A](name: String, retries: Int)(f: => A): A = {
-    def doTry(tryNo: Int): A = {
-      try { f }
-      catch {
-        case NonFatal(t) if tryNo <= retries =>
-          Console.err.println(s"$name failed try $tryNo with $t, retrying")
-          doTry(tryNo + 1)
-      }
-    }
-
-    doTry(1)
   }
 }

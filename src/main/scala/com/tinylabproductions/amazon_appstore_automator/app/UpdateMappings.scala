@@ -4,6 +4,7 @@ import com.tinylabproductions.amazon_appstore_automator.{AmazonAppId, AmazonAppS
 import com.softwaremill.quicklens._
 
 import scala.annotation.tailrec
+import com.tinylabproductions.amazon_appstore_automator.util.Log._
 
 trait UpdateMappings { _: App =>
   case class ScrapeAppIds(

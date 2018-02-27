@@ -4,7 +4,7 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 
-import com.tinylabproductions.amazon_appstore_automator.app.App
+import com.tinylabproductions.amazon_appstore_automator.app.{AppUploader, Credentials}
 import com.typesafe.config.ConfigFactory
 import configs.Result.{Failure, Success}
 import configs.syntax._
@@ -49,7 +49,18 @@ object Main {
           System.setProperty("webdriver.chrome.driver", cfg.chromeDriverPath.toString)
 
           io.StdIn.readLine("Press enter to continue...")
-          App.work(cfg, releaseNotes, releases, mapping, parsedArgs.updateAppParams)
+
+          implicit val credentials: Credentials = Credentials(
+            username = cfg.credentials.username.getOrElse {
+              io.StdIn.readLine("Enter username: ")
+            },
+            password = cfg.credentials.password.getOrElse {
+              print("Enter password: ")
+              new String(System.console().readPassword())
+            }
+          )
+
+          AppUploader(cfg, releaseNotes, releases, mapping, parsedArgs.updateAppParams)
         case Failure(errors) =>
           Console.err.println("Error while reading configs:")
           errors.entries.foreach { error =>

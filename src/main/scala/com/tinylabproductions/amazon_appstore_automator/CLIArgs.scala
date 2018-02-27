@@ -15,7 +15,9 @@ case class CLIArgs(
 object CLIArgs {
   implicit val zero: Zero[CLIArgs] = Zero.zero(apply(
     null, null, null,
-    UpdateAppParams(submitApp = true, appDirectedUnderAge13 = None)
+    UpdateAppParams(
+      submitApp = true, appDirectedUnderAge13 = None
+    )
   ))
   implicit val PathRead: Read[Path] = Read.stringRead.map(Paths.get(_))
 

@@ -4,6 +4,7 @@ package com.tinylabproductions.amazon_appstore_automator.app
 import java.nio.file.{Files, Path}
 
 import com.tinylabproductions.amazon_appstore_automator._
+import com.tinylabproductions.amazon_appstore_automator.util.Log
 import org.scalatest.concurrent.Eventually
 import org.scalatest.selenium.Chrome
 import org.scalatest.time.{Milliseconds, Seconds, Span}
@@ -11,6 +12,15 @@ import play.api.libs.json.Json
 
 import scala.annotation.tailrec
 import scala.util.matching.Regex
+
+sealed trait AppUpdateStatus
+object AppUpdateStatus {
+  case object Success extends AppUpdateStatus
+  case object AlreadySubmitting extends AppUpdateStatus {
+    override def toString = "Could not submit app because it is already currently submitting."
+  }
+  case class Error(s: String) extends AppUpdateStatus
+}
 
 class App extends Chrome with WebBrowserOps with UpdateMappings with Eventually {
   import com.tinylabproductions.amazon_appstore_automator.util.Log._
@@ -108,7 +118,7 @@ class App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
 
   def updateApp(
     appId: AmazonAppId, apk: Path, releaseNotes: ReleaseNotes, params: UpdateAppParams
-  ): Unit = {
+  ): AppUpdateStatus = {
     // Old App IDs still work, they just say that we are looking at an archived version of an
     // app and provide a link to new version cssSelector(".app-status-ARCHIVED a").
     //
@@ -152,9 +162,13 @@ class App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
     (find(editButton), find(id("cancel_app_button"))) match {
       case (None, Some(_)) =>
         info("App already submitting, skipping.")
+        AppUpdateStatus.AlreadySubmitting
       case (None, None) =>
-        err("Neither edit not cancel submission buttons could be found in binary files page!")
-        err(s"Cannot continue uploading, skipping $appId for $apk.")
+        val error =
+          s"Neither edit not cancel submission buttons could be found in binary files page!\n"
+          s"Cannot continue uploading, skipping $appId for $apk."
+        err(error)
+        AppUpdateStatus.Error(error)
       case (Some(edit), _) =>
         // Edit
         click on edit
@@ -162,13 +176,14 @@ class App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
 
         // Upload file
         val box = eventually { findOrDie(id("appBinary"), "upload binary box") }
-        info(s"Uploading $apk to $box")
+        Log.info(s"Uploading $apk to $box")
         box.underlying.sendKeys(apk.toRealPath().toString)
 
         find(id("itemSection.errors")) match {
           case Some(error) =>
-            err(s"Uploading $appId APK resulted in an error, skipping $apk!")
-            err(error.text)
+            val errorS = s"Uploading $appId APK resulted in an error, skipping $apk:\n ${error.text}"
+            err(errorS)
+            AppUpdateStatus.Error(errorS)
           case None =>
             // Save
             click on id("submit_button")
@@ -189,6 +204,7 @@ class App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
 
             // Submit to store
             if (params.submitApp) click on id("submit_app_button")
+            AppUpdateStatus.Success
         }
     }
   }

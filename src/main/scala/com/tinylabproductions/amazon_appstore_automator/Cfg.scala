@@ -25,7 +25,8 @@ case class Cfg(
   mappingFilePath: Path,
   chromeDriverPath: Path,
   credentials: Cfg.Credentials,
-  uploadParalellism: Int
+  scrapeParalellism: Int,
+  uploadParalellism: Int,
 )
 object Cfg {
   case class Credentials(username: Option[String], password: Option[String])

@@ -64,34 +64,23 @@ class App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
   }
 
   def getLatestMapping(
-    cfg: Cfg, releases: Releases, initialMapping: PackageNameToAppIdMapping
+    cfg: Cfg, releases: Releases, initialMapping: PackageNameToAppIdMapping,
+    unknownIds: Set[AmazonAppId]
   ): PackageNameToAppIdMapping = {
     def doUpdateMapping(): PackageNameToAppIdMapping = {
       info("Updating mapping...")
-      val result = updateMapping(
-        cfg.amazonAppSkuMustMatchAndroidPackageName, cfg.ignoredAppIds, initialMapping
+      val result = AppUploader.updateMapping(
+        cfg.scrapeParalellism, cfg.amazonAppSkuMustMatchAndroidPackageName, unknownIds,
+        initialMapping
       )
-      Files.write(cfg.mappingFilePath, Json.toBytes(Json.toJson(result.mapping)))
+      Files.write(cfg.mappingFilePath, Json.toBytes(Json.toJson(result.map)))
       info(
         s"Mapping updated. " +
-        s"Old: ${initialMapping.mapping.size} entries, new: ${result.mapping.mapping.size} entries."
+        s"Old: ${initialMapping.mapping.size} entries, new: ${result.map.mapping.size} entries."
       )
-      if (result.warnings.nonEmpty) {
-        warn("### Found warnings:")
-        result.warnings.foreach { warning =>
-          warn(s" - $warning")
-        }
-      }
-      if (result.errors.nonEmpty) {
-        err("### Found errors:")
-        result.errors.foreach { error =>
-          err(s" - $error")
-        }
-
-        err("Aborting.")
-        sys.exit(2)
-      }
-      result.mapping
+      AppUploader.showWarnings(result)
+      AppUploader.showErrors(result)
+      result.map
     }
 
     // Do we have enough mapping data so we could proceed?

@@ -21,12 +21,23 @@ class Pool[A](
     pool = a :: pool
   }
 
-  def destroyAll(): Unit = {
+  def withSession[B](f: A => B): B = {
+    val a = borrow()
+    try { f(a) }
+    finally { release(a) }
+  }
+
+  def destroyN(n: Int): Unit = {
+    if (n <= 0) return
+
     var previousPool = List.empty[A]
     synchronized {
-      previousPool = pool
-      pool = Nil
+      val (toDestroy, toKeep) = pool.splitAt(n)
+      previousPool = toDestroy
+      pool = toKeep
     }
     previousPool.foreach(destroy)
   }
+
+  def destroyAll(): Unit = destroyN(pool.size)
 }

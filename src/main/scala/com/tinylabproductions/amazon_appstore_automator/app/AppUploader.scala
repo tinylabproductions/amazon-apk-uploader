@@ -4,12 +4,16 @@ import java.util.concurrent.Executors
 
 import com.tinylabproductions.amazon_appstore_automator.util.Log._
 import com.tinylabproductions.amazon_appstore_automator.util.{Pool, Retries}
-import com.tinylabproductions.amazon_appstore_automator.{Cfg, PackageNameToAppIdMapping, ReleaseNotes, Releases, ThrowableExts}
+import com.tinylabproductions.amazon_appstore_automator.{AmazonAppId, Cfg, HasErrors, HasWarnings, LogLevel, PackageNameToAppIdMapping, ReleaseNotes, Releases, ThrowableExts}
 
+import scala.annotation.tailrec
 import scala.concurrent.duration._
-import scala.concurrent.{Await, ExecutionContext, ExecutionContextExecutor, Future}
+import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
+import cats.instances.all._
+import cats.syntax.all._
+import com.softwaremill.quicklens._
 
 object AppUploader {
   private[this] def destroyA(app: App): Unit = app.webDriver.close()
@@ -46,19 +50,43 @@ object AppUploader {
   ): Try[A] =
     Retries.withRetries(name, retries)(withSession(closeSessionOnFinish)(f))
 
+  def showWarnings(warnings: HasWarnings): Unit = {
+    if (warnings.warnings.nonEmpty) {
+      warn("### Found warnings:")
+      warnings.warnings.foreach { warning =>
+        warn(s" - $warning")
+      }
+    }
+  }
+
+  def showErrors(errors: HasErrors): Unit = {
+    if (errors.errors.nonEmpty) {
+      err("### Found errors:")
+      errors.errors.foreach { error =>
+        err(s" - $error")
+      }
+
+      err("Aborting.")
+      sys.exit(2)
+    }
+  }
+
   def apply(
     cfg: Cfg, releaseNotes: ReleaseNotes, releases: Releases,
     initialMapping: PackageNameToAppIdMapping, params: UpdateAppParams
   )(implicit credentials: Credentials): Unit = {
+    val scrapedAppIds = fetchAllAppIds(cfg.scrapeParalellism)
+    showErrors(scrapedAppIds)
+    val unknownIds = scrapedAppIds.ids -- initialMapping.mapping.values -- cfg.ignoredAppIds
+
     val mapping = withSessionRetries("get latest mapping") { app =>
-      app.getLatestMapping(cfg, releases, initialMapping)
+      app.getLatestMapping(cfg, releases, initialMapping, unknownIds)
     }.get
 
+    sessions.destroyN(cfg.scrapeParalellism - cfg.uploadParalellism)
     info(s"Uploading ${releases.v.size} releases...")
     val results = {
-      val executor = Executors.newFixedThreadPool(cfg.uploadParalellism)
-      try {
-        implicit val executionContext: ExecutionContextExecutor = ExecutionContext.fromExecutor(executor)
+      executorWithContext(cfg.uploadParalellism) { implicit ec =>
         val resultsF = Future.sequence(releases.v.zipWithIndex.map { case (release, idx) =>
           Future {
             val name = s"Uploading $release (${idx + 1}/${releases.v.size})"
@@ -77,9 +105,6 @@ object AppUploader {
           }
         })
         Await.result(resultsF, 7.days)
-      }
-      finally {
-        executor.shutdown()
       }
     }
     info("Done uploading releases.")
@@ -106,6 +131,55 @@ object AppUploader {
         info(s"!!! - $release")
         info(s"!!!   $status")
       }
+    }
+  }
+
+  def fetchAllAppIds(parallelism: Int): FetchAppIdsResult = {
+    def fetch(app: App, startingPage: Int): FetchAppIdsResult = {
+      @tailrec def rec(currentPage: Int, currentResult: FetchAppIdsResult): FetchAppIdsResult = {
+        val res = app.scrapeIds(currentPage)
+        if (res.isEmpty) currentResult
+        else rec(currentPage + parallelism, currentResult combine res)
+      }
+
+      rec(startingPage, FetchAppIdsResult.empty)
+    }
+
+    val resultF = executorWithContext(parallelism) { implicit ec =>
+      Future.sequence((1 to parallelism).toVector.map { startingPage =>
+        Future { sessions.withSession(fetch(_, startingPage)) }
+      }).map(_.combineAll)
+    }
+    Await.result(resultF, 7.days)
+  }
+
+  def updateMapping(
+    parallelism: Int,
+    onSkuMismatches: LogLevel,
+    unknownIds: Set[AmazonAppId],
+    known: PackageNameToAppIdMapping
+  ): ScrapeAppIds = {
+    executorWithContext(parallelism) { implicit ec =>
+      val resultF = Future.sequence(unknownIds.toVector.zipWithIndex.map { case (appId, idx) =>
+        Future {
+          info(s"Retrieving details for $appId ${idx + 1}/${unknownIds.size}...")
+          sessions.withSession(_.scrapeAppId(onSkuMismatches, appId))
+        }
+      })
+      val (errors, scrapedAppIds) = Await.result(resultF, 7.days).partitionEithers
+      val ids = scrapedAppIds.map(_.toIds).fold(ScrapeAppIds.empty)(_ ++ _)
+      ids.modify(_.errors).using(_ ++ errors)
+    }
+  }
+
+  def executorWithContext[A](parallelism: Int)(f: ExecutionContext => A): A = {
+    val executor = Executors.newFixedThreadPool(parallelism)
+    try {
+      val context = ExecutionContext.fromExecutor(executor)
+      f(context)
+    }
+    finally {
+      executor.shutdown()
     }
   }
 }

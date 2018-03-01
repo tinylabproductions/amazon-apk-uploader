@@ -37,7 +37,11 @@ object AmazonAppId {
   implicit val configs: Configs[AmazonAppId] = Configs.stringConfigs.map(apply)
 }
 
-case class PackageNameToAppIdMapping(mapping: Map[AndroidPackageName, AmazonAppId])
+case class PackageNameToAppIdMapping(mapping: Map[AndroidPackageName, AmazonAppId]) {
+  def ++(m: PackageNameToAppIdMapping): PackageNameToAppIdMapping =
+    // Not a monoid, because we break monoid laws
+    PackageNameToAppIdMapping(mapping ++ m.mapping)
+}
 object PackageNameToAppIdMapping {
   val empty = apply(Map.empty)
 
@@ -59,3 +63,10 @@ case class Release(apkPath: Path, publishInfo: PublishInfo) {
   override def toString: String = s"${publishInfo.packageName.s} at $apkPath"
 }
 case class Releases(v: Vector[Release]) extends AnyVal
+
+trait HasErrors {
+  def errors: Vector[String]
+}
+trait HasWarnings {
+  def warnings: Vector[String]
+}

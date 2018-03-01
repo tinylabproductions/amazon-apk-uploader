@@ -9,12 +9,12 @@ import com.softwaremill.quicklens._
 case class CLIArgs(
   configFile: Path,
   releaseNotes: Path,
-  releasesPath: Path,
+  releases: Vector[Path],
   updateAppParams: UpdateAppParams
 )
 object CLIArgs {
   implicit val zero: Zero[CLIArgs] = Zero.zero(apply(
-    null, null, null,
+    null, null, Vector.empty,
     UpdateAppParams(
       submitApp = true, appDirectedUnderAge13 = None
     )
@@ -36,12 +36,13 @@ object CLIArgs {
       .action((value, args) =>
         args.modify(_.updateAppParams.appDirectedUnderAge13).setTo(Some(value))
       )
-    opt[Path]('r', "releases-path").abbr("rp").required()
-      .text("directory to deploy")
-      .action((value, args) => args.copy(releasesPath = value))
+
+    arg[Path]("<directory>...").unbounded()
+      .text("A list of directories to deploy")
+      .action((value, args) => args.copy(releases = args.releases :+ value))
     note(
-      """  This directory should have subdirectories that each contains
-        |  publish_info.json (configurable in config file) and an .apk to upload""".stripMargin
+      """  These directories should contain publish_info.json (configurable in config file)
+        |  and an .apk to upload""".stripMargin
     )
 
     note(

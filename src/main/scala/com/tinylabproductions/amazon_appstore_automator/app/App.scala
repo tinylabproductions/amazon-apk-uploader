@@ -51,19 +51,16 @@ class App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
     find(cssSelector("#current_version_a .versionStatus")).exists(_.text.trim == "(Under Review)")
 
   def signIn(credentials: Credentials): Boolean = {
-    go to "https://developer.amazon.com/myapps.html"
     def isLoggedIn = find(id("appsandservices_myapps")).isDefined
 
-    if (isLoggedIn) {
-      true
-    }
-    else {
+    if (!isLoggedIn) {
+      go to "https://developer.amazon.com/myapps.html"
       emailField(id("ap_email")).value = credentials.username
       new PasswordField(findOrDie(id("ap_password")).underlying).value = credentials.password
       click on id("signInSubmit")
-
-      isLoggedIn
     }
+
+    isLoggedIn
   }
 
   def getLatestMapping(
@@ -161,7 +158,7 @@ class App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
     goToBinaryFiles()
     (find(editButton), find(id("cancel_app_button"))) match {
       case (None, Some(_)) =>
-        info("App already submitting, skipping.")
+        info(s"App already submitting, skipping $appId for $apk.")
         AppUpdateStatus.AlreadySubmitting
       case (None, None) =>
         val error =

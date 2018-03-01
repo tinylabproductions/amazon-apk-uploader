@@ -3,7 +3,7 @@ package com.tinylabproductions.amazon_appstore_automator.app
 import java.util.concurrent.Executors
 
 import com.tinylabproductions.amazon_appstore_automator.util.Log._
-import com.tinylabproductions.amazon_appstore_automator.util.Retries
+import com.tinylabproductions.amazon_appstore_automator.util.{Pool, Retries}
 import com.tinylabproductions.amazon_appstore_automator.{Cfg, PackageNameToAppIdMapping, ReleaseNotes, Releases, ThrowableExts}
 
 import scala.concurrent.duration._
@@ -12,32 +12,29 @@ import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 object AppUploader {
-  private[this] val globalSession = ThreadLocal.withInitial[Option[App]](() => Option.empty[App])
+  private[this] def destroyA(app: App): Unit = app.webDriver.close()
+  private[this] val sessions = new Pool[App](
+    create = () => new App,
+    destroy = destroyA
+  )
 
   def withSession[A](
     closeSessionOnFinish: Boolean = false
   )(f: App => A)(implicit credentials: Credentials): Try[A] = {
-    def closeSession(): Unit = {
-      globalSession.get().foreach { session =>
-        session.webDriver.close()
-        globalSession.set(None)
-      }
-    }
-
+    val app = sessions.borrow()
     try {
-      if (globalSession.get().isEmpty) globalSession.set(Some(new App))
-      val session = globalSession.get.get
-      if (!session.signIn(credentials)) {
+      if (!app.signIn(credentials)) {
         throw new Exception("Can't sign in with provided credentials!")
       }
 
-      val result = f(session)
-      if (closeSessionOnFinish) closeSession()
+      val result = f(app)
+      if (closeSessionOnFinish) destroyA(app)
+      else sessions.release(app)
       Success(result)
     }
     catch {
       case NonFatal(t) =>
-        closeSession()
+        destroyA(app)
         Failure(t)
     }
   }
@@ -53,33 +50,41 @@ object AppUploader {
     cfg: Cfg, releaseNotes: ReleaseNotes, releases: Releases,
     initialMapping: PackageNameToAppIdMapping, params: UpdateAppParams
   )(implicit credentials: Credentials): Unit = {
-    val mapping = withSessionRetries("get latest mapping", closeSessionOnFinish = true) { app =>
+    val mapping = withSessionRetries("get latest mapping") { app =>
       app.getLatestMapping(cfg, releases, initialMapping)
     }.get
 
     info(s"Uploading ${releases.v.size} releases...")
-    val executor = Executors.newFixedThreadPool(cfg.uploadParalellism)
-    implicit val executionContext: ExecutionContextExecutor = ExecutionContext.fromExecutor(executor)
-    val resultsF = Future.sequence(releases.v.zipWithIndex.map { case (release, idx) =>
-      Future {
-        val name = s"Uploading $release (${idx + 1}/${releases.v.size})"
-        val res = withSessionRetries(name) { app =>
-          info(name)
-          mapping.mapping.get(release.publishInfo.packageName) match {
-            case Some(appId) =>
-              app.updateApp(appId, release.apkPath, releaseNotes, params)
-            case None =>
-              val error = s"Can't find app id for $release, skipping!"
-              err(error)
-              AppUpdateStatus.Error(error)
+    val results = {
+      val executor = Executors.newFixedThreadPool(cfg.uploadParalellism)
+      try {
+        implicit val executionContext: ExecutionContextExecutor = ExecutionContext.fromExecutor(executor)
+        val resultsF = Future.sequence(releases.v.zipWithIndex.map { case (release, idx) =>
+          Future {
+            val name = s"Uploading $release (${idx + 1}/${releases.v.size})"
+            val res = withSessionRetries(name) { app =>
+              info(name)
+              mapping.mapping.get(release.publishInfo.packageName) match {
+                case Some(appId) =>
+                  app.updateApp(appId, release.apkPath, releaseNotes, params)
+                case None =>
+                  val error = s"Can't find app id for $release, skipping!"
+                  err(error)
+                  AppUpdateStatus.Error(error)
+              }
+            }
+            release -> res
           }
-        }
-        release -> res
+        })
+        Await.result(resultsF, 7.days)
       }
-    })
-    val results = Await.result(resultsF, 7.days)
+      finally {
+        executor.shutdown()
+      }
+    }
     info("Done uploading releases.")
-    
+    sessions.destroyAll()
+
     val (errors, successful) = results.map {
       case (release, util.Success(AppUpdateStatus.Success)) =>
         Right(release)
@@ -96,10 +101,10 @@ object AppUploader {
       }
     }
     if (errors.nonEmpty) {
-      err(s"Failed (${errors.size}/${results.size}):")
+      info(s"!!! Failed (${errors.size}/${results.size}):")
       errors.foreach { case (release, status) =>
-        err(s"- $release")
-        err(s"  $status")
+        info(s"!!! - $release")
+        info(s"!!!   $status")
       }
     }
   }

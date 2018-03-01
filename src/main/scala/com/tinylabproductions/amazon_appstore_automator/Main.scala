@@ -1,6 +1,5 @@
 package com.tinylabproductions.amazon_appstore_automator
 
-import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 
@@ -9,7 +8,6 @@ import com.typesafe.config.ConfigFactory
 import configs.Result.{Failure, Success}
 import configs.syntax._
 import org.apache.commons.io.FileUtils
-import org.apache.commons.io.filefilter.{FileFilterUtils, TrueFileFilter}
 import play.api.libs.json.Json
 
 import scala.collection.JavaConverters._
@@ -28,13 +26,9 @@ object Main {
               s"Can't read release notes from ${parsedArgs.releaseNotes}: ${t.asString}"
             }
           )
-          val releases = Releases(getS(
-            FileUtils.iterateFiles(
-              parsedArgs.releasesPath.toFile,
-              FileFilterUtils.nameFileFilter(cfg.publishInfoJsonFilename),
-              TrueFileFilter.TRUE
-            ).asScala.map(readReleaseDirectory).sequenceValidations
-          ))
+          val releases = Releases(getS(parsedArgs.releases.map(r =>
+            readReleaseDirectory(r resolve cfg.publishInfoJsonFilename)
+          ).sequenceValidations))
           val mapping = get(readMapping(cfg.mappingFilePath))
 
           println(s"Will deploy ${releases.v.size} releases:")
@@ -97,15 +91,17 @@ object Main {
       PackageNameToAppIdMapping.empty
   }.toEither.left.map { t => s"Can't read mappings from $p: ${t.asString}" }
 
-  def readReleaseDirectory(publishInfoFile: File): Either[String, Release] = {
+  def readReleaseDirectory(
+    publishInfoFile: Path
+  ): Either[String, Release] = {
     def publishInfoE =
-      Json.parse(Files.readAllBytes(publishInfoFile.toPath))
+      Json.parse(Files.readAllBytes(publishInfoFile))
       .validate[PublishInfo]
       .asEither
       .left.map { err => s"Can't parse $publishInfoFile:\n${err.asString}" }
     def apkPathE = {
-      val releaseDir = publishInfoFile.getParentFile
-      FileUtils.listFiles(releaseDir, Array("apk"), false).asScala.toVector match {
+      val releaseDir = publishInfoFile.getParent
+      FileUtils.listFiles(releaseDir.toFile, Array("apk"), false).asScala.toVector match {
         case Vector(apk) => Right(apk.toPath)
         case other => Left(s"Found 0 or more than 1 apks in release directory $releaseDir: $other")
       }

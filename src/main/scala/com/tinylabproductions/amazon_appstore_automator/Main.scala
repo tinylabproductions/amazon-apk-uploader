@@ -54,7 +54,8 @@ object Main {
             }
           )
 
-          AppUploader(cfg, releaseNotes, releases, mapping, parsedArgs.updateAppParams)
+          val uploader = new AppUploader(credentials)
+          uploader(cfg, releaseNotes, releases, mapping, parsedArgs.updateAppParams)
         case Failure(errors) =>
           Console.err.println("Error while reading configs:")
           errors.entries.foreach { error =>

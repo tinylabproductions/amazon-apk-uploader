@@ -1,5 +1,7 @@
 package com.tinylabproductions.amazon_appstore_automator.util
 
+import scala.util.control.NonFatal
+
 
 class Pool[A](
   create: () => A,
@@ -7,14 +9,17 @@ class Pool[A](
 ) {
   private[this] var pool = List.empty[A]
 
-  def borrow(): A = synchronized {
-    pool match {
-      case a :: tail =>
-        pool = tail
-        a
-      case Nil =>
-        create()
+  def borrow(): A = {
+    val aOpt = synchronized {
+      pool match {
+        case a :: tail =>
+          pool = tail
+          Some(a)
+        case Nil =>
+          None
+      }
     }
+    aOpt.getOrElse(create())
   }
 
   def release(a: A): Unit = synchronized {
@@ -23,8 +28,16 @@ class Pool[A](
 
   def withSession[B](f: A => B): B = {
     val a = borrow()
-    try { f(a) }
-    finally { release(a) }
+    try {
+      val ret = f(a)
+      release(a)
+      ret
+    }
+    catch {
+      case NonFatal(t) =>
+        destroy(a)
+        throw t
+    }
   }
 
   def destroyN(n: Int): Unit = {

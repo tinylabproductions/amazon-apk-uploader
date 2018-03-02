@@ -1,54 +1,39 @@
 package com.tinylabproductions.amazon_appstore_automator.app
 
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.util.concurrent.Executors
 
+import cats.instances.all._
+import cats.syntax.all._
+import com.softwaremill.quicklens._
 import com.tinylabproductions.amazon_appstore_automator.util.Log._
 import com.tinylabproductions.amazon_appstore_automator.util.{Pool, Retries}
 import com.tinylabproductions.amazon_appstore_automator.{AmazonAppId, Cfg, HasErrors, HasWarnings, LogLevel, PackageNameToAppIdMapping, ReleaseNotes, Releases, ThrowableExts}
+import play.api.libs.json.Json
 
 import scala.annotation.tailrec
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContext, Future}
-import scala.util.control.NonFatal
-import scala.util.{Failure, Success, Try}
-import cats.instances.all._
-import cats.syntax.all._
-import com.softwaremill.quicklens._
+import scala.util.Try
 
-object AppUploader {
+class AppUploader(credentials: Credentials) {
   private[this] def destroyA(app: App): Unit = app.webDriver.close()
   private[this] val sessions = new Pool[App](
-    create = () => new App,
-    destroy = destroyA
-  )
-
-  def withSession[A](
-    closeSessionOnFinish: Boolean = false
-  )(f: App => A)(implicit credentials: Credentials): Try[A] = {
-    val app = sessions.borrow()
-    try {
+    create = () => {
+      val app = new App
       if (!app.signIn(credentials)) {
         throw new Exception("Can't sign in with provided credentials!")
       }
-
-      val result = f(app)
-      if (closeSessionOnFinish) destroyA(app)
-      else sessions.release(app)
-      Success(result)
-    }
-    catch {
-      case NonFatal(t) =>
-        destroyA(app)
-        Failure(t)
-    }
-  }
+      app
+    },
+    destroy = destroyA
+  )
 
   def withSessionRetries[A](
-    name: String, retries: Int = 5, closeSessionOnFinish: Boolean = false
-  )(f: App => A)(
-    implicit credentials: Credentials
-  ): Try[A] =
-    Retries.withRetries(name, retries)(withSession(closeSessionOnFinish)(f))
+    name: String, retries: Int = 5
+  )(f: App => A): Try[A] =
+    Try(Retries.withRetries(name, retries)(sessions.withSession(f)))
 
   def showWarnings(warnings: HasWarnings): Unit = {
     if (warnings.warnings.nonEmpty) {
@@ -74,20 +59,17 @@ object AppUploader {
   def apply(
     cfg: Cfg, releaseNotes: ReleaseNotes, releases: Releases,
     initialMapping: PackageNameToAppIdMapping, params: UpdateAppParams
-  )(implicit credentials: Credentials): Unit = {
-    val scrapedAppIds = fetchAllAppIds(cfg.scrapeParalellism)
-    showErrors(scrapedAppIds)
-    val unknownIds = scrapedAppIds.ids -- initialMapping.mapping.values -- cfg.ignoredAppIds
-
-    val mapping = withSessionRetries("get latest mapping") { app =>
-      app.getLatestMapping(cfg, releases, initialMapping, unknownIds)
-    }.get
+  ): Unit = {
+    val mapping = Await.result(
+      getLatestMapping(cfg, releases, initialMapping, params.forceUpdateMapping),
+      7.days
+    )
 
     sessions.destroyN(cfg.scrapeParalellism - cfg.uploadParalellism)
     info(s"Uploading ${releases.v.size} releases...")
-    val results = {
+    val results = Await.result(atMost = 7.days, awaitable = {
       executorWithContext(cfg.uploadParalellism) { implicit ec =>
-        val resultsF = Future.sequence(releases.v.zipWithIndex.map { case (release, idx) =>
+        Future.sequence(releases.v.zipWithIndex.map { case (release, idx) =>
           Future {
             val name = s"Uploading $release (${idx + 1}/${releases.v.size})"
             val res = withSessionRetries(name) { app =>
@@ -104,9 +86,8 @@ object AppUploader {
             release -> res
           }
         })
-        Await.result(resultsF, 7.days)
       }
-    }
+    })
     info("Done uploading releases.")
     sessions.destroyAll()
 
@@ -134,7 +115,54 @@ object AppUploader {
     }
   }
 
-  def fetchAllAppIds(parallelism: Int): FetchAppIdsResult = {
+  def getLatestMapping(
+    cfg: Cfg, releases: Releases, initialMapping: PackageNameToAppIdMapping, forceUpdate: Boolean
+  ): Future[PackageNameToAppIdMapping] = {
+    def doUpdateMapping(): Future[PackageNameToAppIdMapping] = {
+      import scala.concurrent.ExecutionContext.Implicits.global
+      info("Updating mapping...")
+      for {
+        scrapedAppIds <- fetchAllAppIds(cfg.scrapeParalellism)
+        _ = showErrors(scrapedAppIds)
+        unknownIds = scrapedAppIds.ids -- initialMapping.mapping.values -- cfg.ignoredAppIds
+        mapping <-
+          scrapeUnknownIds(
+            cfg.scrapeParalellism, cfg.amazonAppSkuMustMatchAndroidPackageName, unknownIds
+          ).map { result =>
+            val newMapping = initialMapping ++ result.map
+            Files.write(
+              cfg.mappingFilePath,
+              Json.prettyPrint(Json.toJson(newMapping)).getBytes(StandardCharsets.UTF_8)
+            )
+            info(
+              s"Mapping updated. " +
+              s"Old: ${initialMapping.mapping.size} entries, new: ${result.map.mapping.size} entries."
+            )
+            showWarnings(result)
+            showErrors(result)
+            newMapping
+          }
+      } yield mapping
+    }
+
+    // Do we have enough mapping data so we could proceed?
+    val unknownPackages =
+      releases.v.map(_.publishInfo.packageName).filterNot(initialMapping.mapping.contains)
+    val mappingF =
+      if (unknownPackages.isEmpty && !forceUpdate)
+        Future.successful(initialMapping)
+      else {
+        info(s"Have unknown ${unknownPackages.size} android packages, need to collect amazon app ids:")
+        unknownPackages.foreach { pkg =>
+          info(s"- ${pkg.s}")
+        }
+        doUpdateMapping()
+      }
+
+    mappingF
+  }
+
+  def fetchAllAppIds(parallelism: Int): Future[FetchAppIdsResult] = {
     def fetch(app: App, startingPage: Int): FetchAppIdsResult = {
       @tailrec def rec(currentPage: Int, currentResult: FetchAppIdsResult): FetchAppIdsResult = {
         val res = app.scrapeIds(currentPage)
@@ -145,41 +173,37 @@ object AppUploader {
       rec(startingPage, FetchAppIdsResult.empty)
     }
 
-    val resultF = executorWithContext(parallelism) { implicit ec =>
+    executorWithContext(parallelism) { implicit ec =>
       Future.sequence((1 to parallelism).toVector.map { startingPage =>
         Future { sessions.withSession(fetch(_, startingPage)) }
       }).map(_.combineAll)
     }
-    Await.result(resultF, 7.days)
   }
 
-  def updateMapping(
+  def scrapeUnknownIds(
     parallelism: Int,
     onSkuMismatches: LogLevel,
-    unknownIds: Set[AmazonAppId],
-    known: PackageNameToAppIdMapping
-  ): ScrapeAppIds = {
+    unknownIds: Set[AmazonAppId]
+  ): Future[ScrapeAppIds] = {
     executorWithContext(parallelism) { implicit ec =>
-      val resultF = Future.sequence(unknownIds.toVector.zipWithIndex.map { case (appId, idx) =>
+      Future.sequence(unknownIds.toVector.zipWithIndex.map { case (appId, idx) =>
         Future {
           info(s"Retrieving details for $appId ${idx + 1}/${unknownIds.size}...")
           sessions.withSession(_.scrapeAppId(onSkuMismatches, appId))
         }
-      })
-      val (errors, scrapedAppIds) = Await.result(resultF, 7.days).partitionEithers
-      val ids = scrapedAppIds.map(_.toIds).fold(ScrapeAppIds.empty)(_ ++ _)
-      ids.modify(_.errors).using(_ ++ errors)
+      }).map { result =>
+        val (errors, scrapedAppIds) = result.partitionEithers
+        val ids = scrapedAppIds.map(_.toIds).fold(ScrapeAppIds.empty)(_ ++ _)
+        ids.modify(_.errors).using(_ ++ errors)
+      }
     }
   }
 
-  def executorWithContext[A](parallelism: Int)(f: ExecutionContext => A): A = {
+  def executorWithContext[A](parallelism: Int)(f: ExecutionContext => Future[A]): Future[A] = {
     val executor = Executors.newFixedThreadPool(parallelism)
-    try {
-      val context = ExecutionContext.fromExecutor(executor)
-      f(context)
-    }
-    finally {
-      executor.shutdown()
-    }
+    implicit val context: ExecutionContext = ExecutionContext.fromExecutor(executor)
+    val future = f(context)
+    future.onComplete(_ => executor.shutdown())
+    future
   }
 }

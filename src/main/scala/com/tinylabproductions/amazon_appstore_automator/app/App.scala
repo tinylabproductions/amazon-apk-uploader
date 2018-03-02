@@ -1,6 +1,5 @@
 package com.tinylabproductions.amazon_appstore_automator.app
 
-
 import java.nio.file.{Files, Path}
 
 import com.tinylabproductions.amazon_appstore_automator._
@@ -12,6 +11,7 @@ import play.api.libs.json.Json
 
 import scala.annotation.tailrec
 import scala.util.matching.Regex
+import scala.concurrent.Future
 
 sealed trait AppUpdateStatus
 object AppUpdateStatus {
@@ -61,42 +61,6 @@ class App extends Chrome with WebBrowserOps with UpdateMappings with Eventually 
     }
 
     isLoggedIn
-  }
-
-  def getLatestMapping(
-    cfg: Cfg, releases: Releases, initialMapping: PackageNameToAppIdMapping,
-    unknownIds: Set[AmazonAppId]
-  ): PackageNameToAppIdMapping = {
-    def doUpdateMapping(): PackageNameToAppIdMapping = {
-      info("Updating mapping...")
-      val result = AppUploader.updateMapping(
-        cfg.scrapeParalellism, cfg.amazonAppSkuMustMatchAndroidPackageName, unknownIds,
-        initialMapping
-      )
-      Files.write(cfg.mappingFilePath, Json.toBytes(Json.toJson(result.map)))
-      info(
-        s"Mapping updated. " +
-        s"Old: ${initialMapping.mapping.size} entries, new: ${result.map.mapping.size} entries."
-      )
-      AppUploader.showWarnings(result)
-      AppUploader.showErrors(result)
-      result.map
-    }
-
-    // Do we have enough mapping data so we could proceed?
-    val unknownPackages =
-      releases.v.map(_.publishInfo.packageName).filterNot(initialMapping.mapping.contains)
-    val mapping =
-      if (unknownPackages.isEmpty) initialMapping
-      else {
-        info(s"Have unknown ${unknownPackages.size} android packages, need to collect amazon app ids:")
-        unknownPackages.foreach { pkg =>
-          info(s"- ${pkg.s}")
-        }
-        doUpdateMapping()
-      }
-
-    mapping
   }
 
   def appUrl(appId: AmazonAppId): String =

@@ -16,7 +16,7 @@ object CLIArgs {
   implicit val zero: Zero[CLIArgs] = Zero.zero(apply(
     null, null, Vector.empty,
     UpdateAppParams(
-      submitApp = true, appDirectedUnderAge13 = None
+      submitApp = true, appDirectedUnderAge13 = None, forceUpdateMapping = false
     )
   ))
   implicit val PathRead: Read[Path] = Read.stringRead.map(Paths.get(_))
@@ -25,6 +25,9 @@ object CLIArgs {
     opt[Path]('c', "config").required()
       .text("Path to app.conf")
       .action((value, args) => args.copy(configFile = value))
+    opt[Boolean]("force-update-mapping").abbr("fum")
+      .text("Update app id mapping even if we determined it is not needed")
+      .action((value, args) => args.modify(_.updateAppParams.forceUpdateMapping).setTo(value))
     opt[Path]("release-notes").abbr("rn").required()
       .text("file with release notes that will be uploaded to app store")
       .action((value, args) => args.copy(releaseNotes = value))
